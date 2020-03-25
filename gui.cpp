@@ -11,20 +11,21 @@ using std::vector;
 
 namespace fs = boost::filesystem;
 
-FileData FILE_DATA;
-TagData TAG_DATA;
-//GTK_DrawingArea_ScrolledWindow* DRAW_SW = 0;
-//GTK_DrawingArea* DRAW = 0;
+/** グローバル変数 **/
 
-string CURRENT_TAG_FOLDER;
-string ROOT_PATH;
-string TAG_FILE;
-bool TAG_EDITED = false;
-bool AUTO_SCALE = true;
+FileData g_FileData; // ファイルをキーとするタグリスト
+TagData g_TagData;   // タグをキーとするファイルリスト
 
-GdkPixbufAnimationIter* AnimationIterator = 0;
+string g_CurrentTagFolder; // 現在のタグファイル取得先カレントフォルダ
+string g_RootPath;         // 現在のルートパス
+string g_TagFile;          // 現在のタグファイル
+bool g_TagEdited = false;  // タグの編集がされたか？
+bool g_AutoScale = true;   // 画像を自動的にスケーリングするか？
 
-gulong FILE_LIST_ID;
+GdkPixbufAnimation* g_Animation = 0;             // GdkPixbufAnimationオブジェクト
+GdkPixbufAnimationIter* g_AnimationIterator = 0; // GdkPixbufAnimationIterオブジェクト
+
+gulong g_FileListID; // ファイルリスト選択変更時のイベントID
 
 /*
   MessageBox : メッセージダイアログの表示
@@ -164,6 +165,51 @@ gboolean Timer( gpointer data )
   return( FALSE );
 }
 
+gboolean CB_DrawImage( GtkWidget* widget, cairo_t* cairo, gpointer data )
+{
+  if ( g_Animation == 0 ) return( FALSE );
+
+  // GtkBuilder オブジェクトへのポインタへ変換
+  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  GtkWidget* viewport = GTK_WIDGET( gtk_builder_get_object( builder, "imageviewport" ) );
+
+  int width = gtk_widget_get_allocated_width( viewport );
+  int height = gtk_widget_get_allocated_height( viewport );
+  //std::cout << "width = " << width << ", height = " << height << std::endl;
+
+  if ( ! gdk_pixbuf_animation_is_static_image( g_Animation ) ) {
+    int imgw = gdk_pixbuf_animation_get_width( g_Animation );
+    int imgh = gdk_pixbuf_animation_get_height( g_Animation );
+    //std::cout << "imgw = " << imgw << ", imgh = " << imgh << std::endl;
+    double ratio = std::min( static_cast< double >( width ) / imgw, static_cast< double >( height ) / imgh );
+    //std::cout << "ratio = " << ratio << std::endl;
+    GdkPixbuf* pixbuf = gdk_pixbuf_animation_iter_get_pixbuf( g_AnimationIterator );
+    if ( g_AutoScale && ratio < 1.0 ) {
+      GdkPixbuf* buff = gdk_pixbuf_scale_simple( pixbuf, imgw * ratio, imgh * ratio, GDK_INTERP_HYPER );
+      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), buff );
+      g_object_unref( buff );
+    } else {
+      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), pixbuf );
+    }
+  } else {
+    GdkPixbuf* pixbuf = gdk_pixbuf_animation_get_static_image( g_Animation );
+    int imgw = gdk_pixbuf_get_width( pixbuf );
+    int imgh = gdk_pixbuf_get_height( pixbuf );
+    //std::cout << "imgw = " << imgw << ", imgh = " << imgh << std::endl;
+    double ratio = std::min( static_cast< double >( width ) / imgw, static_cast< double >( height ) / imgh );
+    //std::cout << "ratio = " << ratio << std::endl;
+    if ( g_AutoScale && ratio < 1.0 ) {
+      GdkPixbuf* buff = gdk_pixbuf_scale_simple( pixbuf, imgw * ratio, imgh * ratio, GDK_INTERP_HYPER );
+      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), buff );
+      g_object_unref( buff );
+    } else {
+      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), pixbuf );
+    }
+  }
+
+  return( FALSE );
+}
+
 /*
   CB_ShowImage : 画像の表示(コールバック関数)
 
@@ -174,78 +220,33 @@ void CB_ShowImage( GtkTreeSelection* selection, gpointer data )
 {
   // GtkBuilder オブジェクトへのポインタへ変換
   GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  GtkImage* image = GTK_IMAGE( gtk_builder_get_object( builder, "imageview" ) );
 
   // リスト選択されているファイル名の取得
   string fileName;
-  if ( ! GetFileName( builder, ROOT_PATH, &fileName ) )
+  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
     return;
 
   // 画像の出力
-  //try {
-  GtkImage* image = GTK_IMAGE( gtk_builder_get_object( builder, "imageview" ) );
-  gtk_image_set_from_file( image, fileName.c_str() );
-  GtkImageType imgType = gtk_image_get_storage_type( image );
-  if ( imgType == GTK_IMAGE_ANIMATION ) {
-    GdkPixbufAnimation* anim = gtk_image_get_animation( image );
-    AnimationIterator = gdk_pixbuf_animation_get_iter( anim, 0 );
-    Timer( AnimationIterator );
+  if ( g_Animation != 0 ) {
+    g_object_unref( g_Animation );
+    g_Animation = 0;
   }
-  //( DRAW_SW->drawingArea()->pixbuf() ).loadFromFile( fileName );
-  //DRAW_SW->drawingArea()->draw();
-  //DRAW_SW->initAdjustment();
-  //} catch( std::runtime_error& e ) {
-  //MessageBox( e.what(), GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, builder );
-  //}
-
-  InitTagList( builder, fileName, FILE_DATA );
-}
-
-gboolean CB_DrawImage( GtkWidget* widget, cairo_t* cairo, gpointer data )
-{
-  if ( ! AUTO_SCALE ) return( FALSE );
-
-  // GtkBuilder オブジェクトへのポインタへ変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
-  GtkWidget* viewport = GTK_WIDGET( gtk_builder_get_object( builder, "imageviewport" ) );
-
-  int width = gtk_widget_get_allocated_width( viewport );
-  int height = gtk_widget_get_allocated_height( viewport );
-  std::cout << "width = " << width << ", height = " << height << std::endl;
-
-  GtkImageType imgType = gtk_image_get_storage_type( GTK_IMAGE( widget ) );
-  if ( imgType == GTK_IMAGE_ANIMATION ) {
-    GdkPixbufAnimation* anim = gtk_image_get_animation( GTK_IMAGE( widget ) );
-    int imgw = gdk_pixbuf_animation_get_width( anim );
-    int imgh = gdk_pixbuf_animation_get_height( anim );
-    std::cout << "imgw = " << imgw << ", imgh = " << imgh << std::endl;
-    double ratio = std::min( static_cast< double >( width ) / imgw, static_cast< double >( height ) / imgh );
-    if ( ratio < 1.0 ) {
-      std::cout << "ratio = " << ratio << std::endl;
-      //GdkPixbufAnimationIter* iter = gdk_pixbuf_animation_get_iter( anim, 0 );
-      GdkPixbuf* pixbuf = gdk_pixbuf_animation_iter_get_pixbuf( AnimationIterator );
-      GdkPixbuf* buff = gdk_pixbuf_scale_simple( pixbuf, imgw * ratio, imgh * ratio, GDK_INTERP_HYPER );
-      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), buff );
-      //gdk_cairo_set_source_pixbuf( cairo, buff, 0, 0 );
-      //cairo_paint( cairo );
-      g_object_unref( buff );
+  GError* error = 0;
+  g_Animation = gdk_pixbuf_animation_new_from_file( fileName.c_str(), &error );
+  if ( g_Animation == 0 ) {
+    std::cerr << error->message << std::endl;
+    gtk_image_set_from_icon_name( image, "image-missing", GTK_ICON_SIZE_DIALOG );
+    g_error_free( error );
+  } else {
+    if ( ! gdk_pixbuf_animation_is_static_image( g_Animation ) ) {
+      g_AnimationIterator = gdk_pixbuf_animation_get_iter( g_Animation, 0 );
+      Timer( g_AnimationIterator );
     }
-  } else if ( imgType == GTK_IMAGE_PIXBUF ) {
-    GdkPixbuf* pixbuf = gtk_image_get_pixbuf( GTK_IMAGE( widget ) );
-    int imgw = gdk_pixbuf_get_width( pixbuf );
-    int imgh = gdk_pixbuf_get_height( pixbuf );
-    std::cout << "imgw = " << imgw << ", imgh = " << imgh << std::endl;
-    double ratio = std::min( static_cast< double >( width ) / imgw, static_cast< double >( height ) / imgh );
-    if ( ratio < 1.0 ) {
-      std::cout << "ratio = " << ratio << std::endl;
-      GdkPixbuf* buff = gdk_pixbuf_scale_simple( pixbuf, imgw * ratio, imgh * ratio, GDK_INTERP_HYPER );
-      gtk_image_set_from_pixbuf( GTK_IMAGE( widget ), buff );
-      //gdk_cairo_set_source_pixbuf( cairo, buff, 0, 0 );
-      //cairo_paint( cairo );
-      g_object_unref( buff );
-    }
+    CB_DrawImage( GTK_WIDGET( image ), 0, data );
   }
 
-  return( FALSE );
+  InitTagList( builder, fileName, g_FileData );
 }
 
 /*
@@ -262,7 +263,7 @@ void InitFileList( GtkBuilder* builder, const FileData& fileData, const string& 
   GtkTreeSelection* selection = GTK_TREE_SELECTION( gtk_builder_get_object( builder, "filelistselection" ) );
   GtkTreeIter iter;
 
-  g_signal_handler_block( selection, FILE_LIST_ID );
+  g_signal_handler_block( selection, g_FileListID );
 
   // ファイルリストの更新
   gtk_list_store_clear( store );
@@ -271,7 +272,7 @@ void InitFileList( GtkBuilder* builder, const FileData& fileData, const string& 
     gtk_list_store_set( store, &iter, 0, ( i->first ).lexically_relative( rootPath ).native().c_str(), -1 );
   }
 
-  g_signal_handler_unblock( selection, FILE_LIST_ID );
+  g_signal_handler_unblock( selection, g_FileListID );
 
   // タグリストの消去
   store = GTK_LIST_STORE( gtk_builder_get_object( builder, "tagliststore" ) );
@@ -354,20 +355,20 @@ gint GetFileNameFromDialog( GtkBuilder* builder, const string& title,
 */
 void CB_FileNew( GtkMenuItem* menuItem, gpointer data )
 {
-  static string CURRENT_IMAGE_FOLDER;
+  static string currentImageFolder;
 
   // GtkBuilder オブジェクトへのポインタに変換
   GtkBuilder* builder = static_cast< GtkBuilder* >( data );
 
   if ( GetFileNameFromDialog( builder, "ルートパスの選択", GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-                              "Cancel", "Select", &ROOT_PATH, &CURRENT_IMAGE_FOLDER ) == GTK_RESPONSE_ACCEPT ) {
+                              "Cancel", "Select", &g_RootPath, &currentImageFolder ) == GTK_RESPONSE_ACCEPT ) {
     // タグの初期化
-    InitTagData( ROOT_PATH, &FILE_DATA, &TAG_DATA );
+    InitTagData( g_RootPath, &g_FileData, &g_TagData );
     // ファイルリストの初期化
-    InitFileList( builder, FILE_DATA, ROOT_PATH );
+    InitFileList( builder, g_FileData, g_RootPath );
     // 変数の初期化
-    TAG_FILE.clear();
-    TAG_EDITED = false;
+    g_TagFile.clear();
+    g_TagEdited = false;
   }
 }
 
@@ -385,22 +386,22 @@ void CB_FileOpen( GtkMenuItem* menuItem, gpointer data )
   string tagFile;
   string rootPath;
   if ( GetFileNameFromDialog( builder, "タグリストを開く", GTK_FILE_CHOOSER_ACTION_OPEN,
-                              "Cancel", "Open", &tagFile, &CURRENT_TAG_FOLDER ) == GTK_RESPONSE_ACCEPT ) {
+                              "Cancel", "Open", &tagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
     // タグファイルの読み込み
     try {
-      ReadTagData( tagFile, &rootPath, &FILE_DATA, &TAG_DATA );
+      ReadTagData( tagFile, &rootPath, &g_FileData, &g_TagData );
     } catch( std::runtime_error& e ) {
       MessageBox( e.what(), GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, builder );
       return;
     }
     // ファイルリストの初期化
-    InitFileList( builder, FILE_DATA, rootPath );
+    InitFileList( builder, g_FileData, rootPath );
     // 補完用リストの初期化
-    InitCompletionList( builder, TAG_DATA );
+    InitCompletionList( builder, g_TagData );
     // 変数の初期化
-    ROOT_PATH = rootPath;
-    TAG_FILE = tagFile;
-    TAG_EDITED = false;
+    g_RootPath = rootPath;
+    g_TagFile = tagFile;
+    g_TagEdited = false;
   }
 }
 
@@ -416,10 +417,10 @@ void CB_FileSaveAs( GtkMenuItem* menuItem, gpointer data )
   GtkBuilder* builder = static_cast< GtkBuilder* >( data );
 
   if ( GetFileNameFromDialog( builder, "タグリストの新規保存", GTK_FILE_CHOOSER_ACTION_SAVE,
-                              "Cancel", "Save", &TAG_FILE, &CURRENT_TAG_FOLDER ) == GTK_RESPONSE_ACCEPT ) {
-    WriteTagData( TAG_FILE, ROOT_PATH, FILE_DATA );
+                              "Cancel", "Save", &g_TagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
+    WriteTagData( g_TagFile, g_RootPath, g_FileData );
     // 変数の初期化
-    TAG_EDITED = false;
+    g_TagEdited = false;
   }
 }
 
@@ -431,15 +432,20 @@ void CB_FileSaveAs( GtkMenuItem* menuItem, gpointer data )
 */
 void CB_FileSave( GtkMenuItem* menuItem, gpointer data )
 {
-  if ( TAG_FILE.empty() )
+  if ( g_TagFile.empty() )
     CB_FileSaveAs( menuItem, data );
 
-  if ( ! TAG_EDITED )
+  if ( ! g_TagEdited )
     return;
 
-  WriteTagData( TAG_FILE, ROOT_PATH, FILE_DATA );
+  WriteTagData( g_TagFile, g_RootPath, g_FileData );
 
-  TAG_EDITED = false;
+  g_TagEdited = false;
+}
+
+void CB_ToggleAutoScale( GtkMenuItem* menuItem, gpointer data )
+{
+  g_AutoScale = ! g_AutoScale;
 }
 
 /*
@@ -526,31 +532,44 @@ void CB_AddTag( GtkEntry* entry, gpointer data )
 
   // タグを登録する対象ファイルの取得
   string fileName;
-  if ( ! GetFileName( builder, ROOT_PATH, &fileName ) )
+  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
     return;
 
   // タグの登録
-  if ( ! AddTag( tag, fileName, &FILE_DATA, &TAG_DATA ) )
+  if ( ! AddTag( tag, fileName, &g_FileData, &g_TagData ) )
     return;
 
   // 補完用リストへの登録
   GtkTreeIter iter;
-  //GtkEntryCompletion* completion = gtk_entry_get_completion( entry );
-  //GtkListStore* store = GTK_LIST_STORE( gtk_entry_completion_get_model( completion ) );
-  GtkListStore* store = GTK_LIST_STORE( gtk_builder_get_object( builder, "completionstore" ) );
-  gtk_list_store_append( store, &iter );
-  gtk_list_store_set( store, &iter, 0, tag.c_str(), -1 );
+  if ( g_TagData[tag].size() == 1 ) {
+    GtkListStore* store = GTK_LIST_STORE( gtk_builder_get_object( builder, "completionstore" ) );
+    gtk_list_store_append( store, &iter );
+    gtk_list_store_set( store, &iter, 0, tag.c_str(), -1 );
+  }
 
   // タグリストへの登録
-  //GtkTreeView* view = GTK_TREE_VIEW( gtk_builder_get_object( builder, "taglist" ) );
-  //store = GTK_LIST_STORE( gtk_tree_view_get_model( view ) );
-  store = GTK_LIST_STORE( gtk_builder_get_object( builder, "tagliststore" ) );
+  GtkListStore* store = GTK_LIST_STORE( gtk_builder_get_object( builder, "tagliststore" ) );
   gtk_list_store_append( store, &iter );
   gtk_list_store_set( store, &iter, 0, tag.c_str(), -1 );
 
   gtk_entry_set_text( entry, "" );
 
-  TAG_EDITED = true;
+  g_TagEdited = true;
+}
+
+gint SortTag( GtkTreeModel* model, GtkTreeIter* a, GtkTreeIter* b, gpointer data )
+{
+  gchar* gc;
+  gtk_tree_model_get( model, a, 0, &gc, -1 );
+  string sa = ( gc == 0 ) ? "" : gc;
+  g_free( gc );
+  gtk_tree_model_get( model, b, 0, &gc, -1 );
+  string sb = ( gc == 0 ) ? "" : gc;
+  g_free( gc );
+
+  StrLess less;
+  return( ( less( sa, sb ) ) ? -1 :
+          ( less( sb, sa ) ? 1 : 0 ) );
 }
 
 /*
@@ -562,6 +581,7 @@ void CreateCompletion( GtkBuilder* builder )
 {
   GtkTreeModel* sorted = GTK_TREE_MODEL( gtk_builder_get_object( builder, "completionsort" ) );
   gtk_tree_sortable_set_sort_column_id( GTK_TREE_SORTABLE( sorted ), 0, GTK_SORT_ASCENDING );
+  gtk_tree_sortable_set_sort_func( GTK_TREE_SORTABLE( sorted ), 0, SortTag, 0, 0 );
 
   //GtkEntryCompletion* completion = gtk_entry_completion_new();
 
@@ -595,7 +615,7 @@ void CreateFileList( GtkBuilder* builder )
 
   GtkTreeSelection* selection = gtk_tree_view_get_selection( view );
   gtk_tree_selection_set_mode( selection, GTK_SELECTION_SINGLE );
-  FILE_LIST_ID = g_signal_connect( G_OBJECT( selection ), "changed", G_CALLBACK( CB_ShowImage ), builder );
+  g_FileListID = g_signal_connect( G_OBJECT( selection ), "changed", G_CALLBACK( CB_ShowImage ), builder );
 }
 
 /*
@@ -631,6 +651,7 @@ void CreateTagList( GtkBuilder* builder )
 
   GtkTreeModel* sorted = GTK_TREE_MODEL( gtk_builder_get_object( builder, "taglistsort" ) );
   gtk_tree_sortable_set_sort_column_id( GTK_TREE_SORTABLE( sorted ), 0, GTK_SORT_ASCENDING );
+  gtk_tree_sortable_set_sort_func( GTK_TREE_SORTABLE( sorted ), 0, SortTag, 0, 0 );
   GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
   GtkTreeViewColumn* column = gtk_tree_view_column_new_with_attributes
     ( "tag name", renderer, "text", 0, NULL );
@@ -654,6 +675,9 @@ void CreateMenu( GtkBuilder* builder )
   g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSave ), builder );
   obj = gtk_builder_get_object( builder, "filesaveas" );
   g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSaveAs ), builder );
+
+  obj = gtk_builder_get_object( builder, "autoscale" );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_ToggleAutoScale ), builder );
 }
 
 /*
@@ -774,11 +798,11 @@ void CB_TagEdit( GtkMenuItem* menuItem, gpointer data )
 
   while ( TagEdit( builder, currentTag, &newTag ) == GTK_RESPONSE_ACCEPT ) {
     string message;
-    if ( ! ( CheckTag( &newTag, &message ) && CheckDuplicateTag( newTag, &message, TAG_DATA ) ) ) {
+    if ( ! ( CheckTag( &newTag, &message ) && CheckDuplicateTag( newTag, &message, g_TagData ) ) ) {
       MessageBox( message, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, builder );
       continue;
     } else {
-      ChangeTagName( currentTag, newTag, &FILE_DATA, &TAG_DATA );
+      ChangeTagName( currentTag, newTag, &g_FileData, &g_TagData );
 
       GtkTreeIter child_iter;
       gtk_tree_model_sort_convert_iter_to_child_iter( GTK_TREE_MODEL_SORT( model ), &child_iter, &iter );
@@ -786,7 +810,7 @@ void CB_TagEdit( GtkMenuItem* menuItem, gpointer data )
       gtk_list_store_set( GTK_LIST_STORE( child ), &child_iter, 0, newTag.c_str(), -1 );
 
       ChangeCompletionList( builder, currentTag, newTag );
-      TAG_EDITED = true;
+      g_TagEdited = true;
       break;
     }
   }
@@ -805,21 +829,21 @@ void CB_TagDelete( GtkMenuItem* menuItem, gpointer data )
   GtkTreeModel* model;
   GtkTreeIter iter;
   string fileName;
-  if ( ! GetFileName( builder, ROOT_PATH, &fileName ) )
+  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
     return;
   string tagName;
   if ( ! GetSelectedRow( builder, "taglist", &tagName, &model, &iter ) )
     return;
 
-  FILE_DATA[fileName].erase( tagName );
-  TAG_DATA[tagName].erase( fileName );
+  g_FileData[fileName].erase( tagName );
+  g_TagData[tagName].erase( fileName );
 
   GtkTreeIter child_iter;
   gtk_tree_model_sort_convert_iter_to_child_iter( GTK_TREE_MODEL_SORT( model ), &child_iter, &iter );
   GtkTreeModel* child = gtk_tree_model_sort_get_model( GTK_TREE_MODEL_SORT( model ) );
   gtk_list_store_remove( GTK_LIST_STORE( child ), &child_iter );
 
-  TAG_EDITED = true;
+  g_TagEdited = true;
 }
 
 /*

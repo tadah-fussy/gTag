@@ -168,12 +168,27 @@
                 <property name="can_focus">False</property>
                 <property name="label" translatable="yes">表示(_V)</property>
                 <property name="use_underline">True</property>
+                <child type="submenu">
+                  <object class="GtkMenu">
+                    <property name="visible">True</property>
+                    <property name="can_focus">False</property>
+                    <child>
+                      <object class="GtkImageMenuItem" id="autoscale">
+                        <property name="label">gtk-zoom-fit</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="use_stock">True</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
               </object>
             </child>
             <child>
               <object class="GtkMenuItem" id="helpmenu">
                 <property name="visible">True</property>
                 <property name="can_focus">False</property>
+                <property name="right_justified">True</property>
                 <property name="label" translatable="yes">ヘルプ(_H)</property>
                 <property name="use_underline">True</property>
                 <child type="submenu">

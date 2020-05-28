@@ -76,16 +76,18 @@ void ReadTagData( const string& fileName, string* rootPath, FileData* fileData, 
     throw std::runtime_error( "タグファイルのオープンに失敗しました。" );
 
   string data; // 1行読み込み
-  rootPath->clear();
+  string buffer; // ルートパス用のバッファ
+  //rootPath->clear();
   while ( std::getline( ifs, data ) ) {
-    if ( GetValueFromKey( data, PATH_KEY, rootPath ) ) {
-      InitTagData( *rootPath, fileData, tagData );
+    if ( GetValueFromKey( data, PATH_KEY, &buffer ) ) {
+      InitTagData( buffer, fileData, tagData );
       break;
     }
   }
-  if ( rootPath->empty() ) {
+  if ( buffer.empty() ) {
     throw std::runtime_error( "ルートパスの取得に失敗しました。" );
   }
+  *rootPath = buffer;
 
   string file; // 対象ファイル名
   string tag;  // タグ名

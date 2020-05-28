@@ -33,7 +33,6 @@
     <property name="can_focus">False</property>
     <property name="default_width">1024</property>
     <property name="default_height">768</property>
-    <signal name="delete-event" handler="gtk_main_quit" swapped="no"/>
     <signal name="destroy" handler="gtk_main_quit" swapped="no"/>
     <child>
       <placeholder/>
@@ -177,6 +176,7 @@
                         <property name="label">gtk-zoom-fit</property>
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
                       </object>
                     </child>

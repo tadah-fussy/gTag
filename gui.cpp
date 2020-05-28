@@ -11,7 +11,68 @@ using std::vector;
 
 namespace fs = boost::filesystem;
 
+/** クラス定義 **/
+
+class TagFileStatus
+{
+  bool edited_;         // 編集されているか？
+  string rootPath_;     // ルートパス名
+  string tagFile_;      // タグファイル名
+  GtkBuilder* builder_; // GtkBuilderへのポインタ
+
+  // タイトル名を返す
+  string title() const;
+
+  // タグファイルがあるか？
+  bool hasFile() const
+  { return( ! tagFile_.empty() ); }
+
+public:
+
+  // コンストラクタ
+  TagFileStatus( GtkBuilder* builder );
+
+  // ルートパスの初期化
+  void init( const string& rootPath, FileData* fileData, TagData* tagData );
+
+  // タグファイルのオープン
+  void open( const string& tagFile, FileData* fileData, TagData* tagData );
+
+  // タグファイルの上書き保存
+  void save( const FileData& fileData );
+
+  // タグファイルの新規保存
+  void save( const string& tagFile, const FileData& fileData );
+
+  // タグファイルのファイル名だけを返す
+  string fileName() const
+  { return( fs::path( tagFile_ ).filename().native() ); }
+
+  // タグファイルをフルパスで返す
+  string pathName() const
+  { return( tagFile_ ); }
+
+  // ルートパスを返す
+  string rootPath() const
+  { return( rootPath_ ); }
+
+  // 編集ありにする
+  void set()
+  { edited_ = true; }
+
+  // 編集なしにする
+  void reset()
+  { edited_ = false; }
+
+  // 編集されているか？
+  bool edited() const
+  { return( edited_ ); }
+};
+
 /** グローバル変数 **/
+
+const string PROGRAM_NAME = "gTag";
+const string EDITED_IDENT = " (*)";
 
 FileData g_FileData; // ファイルをキーとするタグリスト
 TagData g_TagData;   // タグをキーとするファイルリスト
@@ -48,6 +109,18 @@ gint MessageBox( const string& message, GtkMessageType messageType, GtkButtonsTy
   gtk_widget_destroy( dialog );
 
   return( res );
+}
+
+/*
+  ShowStatus : ステータスバーへのメッセージ出力
+
+  builder : GtkBuilder オブジェクトへのポインタ
+  message : 出力するメッセージ
+*/
+void ShowStatus( GtkBuilder* builder, const string& message )
+{
+  GtkLabel* statusBar = GTK_LABEL( gtk_builder_get_object( builder, "statusbar" ) );
+  gtk_label_set_text( statusBar, message.c_str() );
 }
 
 /*
@@ -156,6 +229,13 @@ bool GetFileName( GtkBuilder* builder, const string& rootPath, string* fileName 
   return( true );
 }
 
+/*
+  Timer : アニメーション用のタイマー
+
+  data : GdkPixbufAnimationIter オブジェクトへのポインタ
+
+  戻り値 : 常に FALSE
+*/
 gboolean Timer( gpointer data )
 {
   GdkPixbufAnimationIter* iter = static_cast< GdkPixbufAnimationIter* >( data );
@@ -165,6 +245,15 @@ gboolean Timer( gpointer data )
   return( FALSE );
 }
 
+/*
+  CB_DrawImage : 画像の描画(コールバック関数)
+
+  widget : GtkImage オブジェクトへのポインタ
+  cairo : cairo_t オブジェクトへのポインタ
+  data : GtkBuilder オブジェクトへのポインタ
+
+  戻り値 : 常に FALSE
+*/
 gboolean CB_DrawImage( GtkWidget* widget, cairo_t* cairo, gpointer data )
 {
   if ( g_Animation == 0 ) return( FALSE );
@@ -348,6 +437,142 @@ gint GetFileNameFromDialog( GtkBuilder* builder, const string& title,
 }
 
 /*
+  TagFileStatus::title() : タイトル名を返す
+
+  戻り値 : タイトル
+*/
+string TagFileStatus::title() const
+{
+  string title = ( ! hasFile() ) ?
+    ( PROGRAM_NAME + " - [No file]" ) :
+    ( PROGRAM_NAME + " - [" + fileName() + "]" );
+
+  if ( edited() )
+    title += EDITED_IDENT;
+
+  return( title );
+}
+
+/*
+  TagFileStatus コンストラクタ
+
+  builder : GtkBuilder オブジェクトへのポインタ
+*/
+TagFileStatus::TagFileStatus( GtkBuilder* builder )
+  : edited_( false ), rootPath_(), tagFile_(), builder_( builder )
+{
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
+}
+
+/*
+  TagFileStatus::init : ルートパスの新規作成
+
+  rootPath : 新しいルートパス
+  fileData : ファイル名をキーとするタグリストへのポインタ
+  tagData : タグ名をキーとするファイルリストへのポインタ
+*/
+void TagFileStatus::init( const string& rootPath, FileData* fileData, TagData* tagData )
+{
+  // タグの初期化
+  try {
+    InitTagData( rootPath, fileData, tagData );
+  } catch( std::runtime_error& e ) {
+    MessageBox( e.what(), GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, builder_ );
+    return;
+  }
+
+  // 変数の初期化
+  rootPath_ = rootPath;
+  tagFile_.clear();
+  reset();
+
+  // ファイルリストの初期化
+  InitFileList( builder_, *fileData, rootPath_ );
+  // 補完用リストの初期化
+  InitCompletionList( builder_, *tagData );
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
+  ShowStatus( builder_, "Path : " + rootPath_ );
+}
+
+/*
+  TagFileStatus::open : タグファイルのオープン
+
+  tagFile : オープンするタグファイル
+  fileData : ファイル名をキーとするタグリストへのポインタ
+  tagData : タグ名をキーとするファイルリストへのポインタ
+*/
+void TagFileStatus::open( const string& tagFile, FileData* fileData, TagData* tagData )
+{
+  string rootPath;
+
+  // タグファイルの読み込み
+  try {
+    ReadTagData( tagFile, &rootPath, fileData, tagData );
+  } catch( std::runtime_error& e ) {
+    MessageBox( e.what(), GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, builder_ );
+    return;
+  }
+
+  // 変数の初期化
+  rootPath_ = rootPath;
+  tagFile_ = tagFile;
+  reset();
+
+  // ファイルリストの初期化
+  InitFileList( builder_, *fileData, rootPath_ );
+  // 補完用リストの初期化
+  InitCompletionList( builder_, *tagData );
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
+  ShowStatus( builder_, "Path : " + rootPath_ );
+}
+
+/*
+  TagFileStatus::save : タグファイルの上書き保存
+
+  fileData : ファイル名をキーとするタグリストへのポインタ
+*/
+void TagFileStatus::save( const FileData& fileData )
+{
+  // 編集されていなければ何もしない
+  if ( ! edited() ) return;
+
+  // タグファイルの上書き
+  WriteTagData( tagFile_, rootPath_, fileData );
+
+  // 変数の初期化
+  reset();
+
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
+}
+
+/*
+  TagFileStatus::save : タグファイルの新規保存
+
+  tagFile : 保存するタグファイル
+  fileData : ファイル名をキーとするタグリストへのポインタ
+*/
+void TagFileStatus::save( const string& tagFile, const FileData& fileData )
+{
+  // タグファイルの書き込み
+  WriteTagData( tagFile, rootPath_, fileData );
+
+  // 変数の初期化
+  tagFile_ = tagFile;
+  reset();
+
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
+}
+
+/*
   CB_FileNew : タグリストの新規作成(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
@@ -366,9 +591,13 @@ void CB_FileNew( GtkMenuItem* menuItem, gpointer data )
     InitTagData( g_RootPath, &g_FileData, &g_TagData );
     // ファイルリストの初期化
     InitFileList( builder, g_FileData, g_RootPath );
+    // 補完用リストの初期化
+    InitCompletionList( builder, g_TagData );
     // 変数の初期化
     g_TagFile.clear();
     g_TagEdited = false;
+    // メッセージ出力
+    ShowStatus( builder, "Path : " + g_RootPath );
   }
 }
 
@@ -402,6 +631,10 @@ void CB_FileOpen( GtkMenuItem* menuItem, gpointer data )
     g_RootPath = rootPath;
     g_TagFile = tagFile;
     g_TagEdited = false;
+    // メッセージ出力
+    GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder, "root" ) );
+    gtk_window_set_title( rootWin, ( PROGRAM_NAME + " - [" + fs::path( tagFile ).filename().native() + "]" ).c_str() );
+    ShowStatus( builder, "Path : " + g_RootPath );
   }
 }
 
@@ -421,6 +654,10 @@ void CB_FileSaveAs( GtkMenuItem* menuItem, gpointer data )
     WriteTagData( g_TagFile, g_RootPath, g_FileData );
     // 変数の初期化
     g_TagEdited = false;
+    // メッセージ出力
+    GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder, "root" ) );
+    gtk_window_set_title( rootWin, ( PROGRAM_NAME + " - [" + fs::path( g_TagFile ).filename().native() + "]" ).c_str() );
+    //ShowStatus( builder, "Tag file : " + g_TagFile + " ; Path : " + g_RootPath );
   }
 }
 
@@ -443,6 +680,12 @@ void CB_FileSave( GtkMenuItem* menuItem, gpointer data )
   g_TagEdited = false;
 }
 
+/*
+  CB_ToggleAutoScale : 画像をウィンドウに合わせる/そのままの大きさにする の切り替え(コールバック関数)
+
+  menuItem : GtkMenuItem オブジェクトへのポインタ
+  data : GtkBuilder オブジェクトへのポインタ
+*/
 void CB_ToggleAutoScale( GtkMenuItem* menuItem, gpointer data )
 {
   g_AutoScale = ! g_AutoScale;
@@ -498,6 +741,15 @@ bool CheckTag( string* tag, string* message )
   return( true );
 }
 
+/*
+  CheckDuplicateTag : 同じタグが存在しないかチェックする
+
+  tag : タグ
+  message : 不正があった場合のメッセージを保持する変数へのポインタ
+  tagData : タグをキーとするファイルリスト
+
+  戻り値 : 重複があった場合は false を返す
+*/
 bool CheckDuplicateTag( const string& tag, string* message, const TagData& tagData )
 {
   // 同じタグが存在していないか？
@@ -557,6 +809,13 @@ void CB_AddTag( GtkEntry* entry, gpointer data )
   g_TagEdited = true;
 }
 
+/*
+  SortTag : リストの a, b の順位を比較する
+
+  model : GtkTreeModel オブジェクトへのポインタ
+  a, b : 比較対象
+  data : NULL値(未使用)
+*/
 gint SortTag( GtkTreeModel* model, GtkTreeIter* a, GtkTreeIter* b, gpointer data )
 {
   gchar* gc;
@@ -859,6 +1118,26 @@ void CreateTagPopupMenu( GtkBuilder* builder )
   g_signal_connect( tagDelete, "activate", G_CALLBACK( CB_TagDelete ), builder );
 }
 
+/*
+  CB_DeleteEvent : ウィンドウを閉じるときのコールバック関数
+
+  widget : GtkWidget オブジェクトへのポインタ
+  event : GdkEvent オブジェクトへのポインタ
+  data : GtkBuilder オブジェクトへのポインタ
+
+  戻り値 : 常に FALSE
+*/
+gint CB_DeleteEvent( GtkWidget* widget, GdkEvent* event, gpointer data )
+{
+  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+
+  if ( g_TagEdited )
+    if ( MessageBox( "タグファイルを保存しますか？", GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, builder ) == GTK_RESPONSE_YES )
+      CB_FileSave( 0, data );
+
+  return( FALSE );
+}
+
 int main( int argc, char* argv[] )
 {
   gtk_init( &argc, &argv );
@@ -871,7 +1150,9 @@ int main( int argc, char* argv[] )
     return( 1 );
   }
   GObject* rootWin = gtk_builder_get_object( builder, "root" );
-  //g_signal_connect( rootWin, "destroy", G_CALLBACK( gtk_main_quit ), 0 );
+  gtk_window_set_title( GTK_WINDOW( rootWin ), ( PROGRAM_NAME + " - [No file]" ).c_str() );
+  g_signal_connect( rootWin, "destroy", G_CALLBACK( gtk_main_quit ), 0 );
+  g_signal_connect( rootWin, "delete-event", G_CALLBACK( CB_DeleteEvent ), builder );
   //GObject* pane2 = gtk_builder_get_object( builder, "pane2" );
 
   //GTK_DrawingArea draw;
@@ -890,10 +1171,9 @@ int main( int argc, char* argv[] )
   GObject* image = gtk_builder_get_object( builder, "imageview" );
   g_signal_connect( image, "draw", G_CALLBACK( CB_DrawImage ), builder );
 
+  ShowStatus( builder, "Create new path or open tag file." );
+
   gtk_builder_connect_signals( builder, 0 );
-  //map< fs::path, vector< string > > tagData;
-  //InitTagData( argv[1], &tagData );
-  //WriteTagData( "test.txt", argv[1], tagData );
 
   gtk_widget_show_all( GTK_WIDGET( rootWin ) );
 

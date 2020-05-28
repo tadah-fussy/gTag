@@ -9,7 +9,6 @@
 #define GUI_20200128_H
 
 #include "file.hpp"
-#include "../GraphicLibrary/renewal/gl_pixbuf.h"
 #include <gtk/gtk.h>
 #include <iostream>
 #include <boost/algorithm/string/trim.hpp>

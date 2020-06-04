@@ -8,6 +8,7 @@ using std::cerr;
 using std::endl;
 using std::string;
 using std::vector;
+using std::set;
 
 namespace fs = boost::filesystem;
 
@@ -15,6 +16,7 @@ namespace fs = boost::filesystem;
 
 class TagFileStatus
 {
+  bool canSave_;        // 保存可能か？
   bool edited_;         // 編集されているか？
   string rootPath_;     // ルートパス名
   string tagFile_;      // タグファイル名
@@ -22,10 +24,6 @@ class TagFileStatus
 
   // タイトル名を返す
   string title() const;
-
-  // タグファイルがあるか？
-  bool hasFile() const
-  { return( ! tagFile_.empty() ); }
 
 public:
 
@@ -56,17 +54,27 @@ public:
   string rootPath() const
   { return( rootPath_ ); }
 
+  // 保存可能か？
+  bool canSave() const
+  { return( canSave_ ); }
+
   // 編集ありにする
-  void set()
-  { edited_ = true; }
+  void set();
 
   // 編集なしにする
-  void reset()
-  { edited_ = false; }
+  void reset();
 
   // 編集されているか？
   bool edited() const
   { return( edited_ ); }
+
+  // タグファイルがあるか？
+  bool hasFile() const
+  { return( ! tagFile_.empty() ); }
+
+  // GtkBuilderオブジェクトへのポインタを返す
+  GtkBuilder* builder() const
+  { return( builder_ ); }
 };
 
 /** グローバル変数 **/
@@ -77,12 +85,11 @@ const string EDITED_IDENT = " (*)";
 FileData g_FileData; // ファイルをキーとするタグリスト
 TagData g_TagData;   // タグをキーとするファイルリスト
 
-string g_CurrentTagFolder; // 現在のタグファイル取得先カレントフォルダ
-string g_RootPath;         // 現在のルートパス
-string g_TagFile;          // 現在のタグファイル
-bool g_TagEdited = false;  // タグの編集がされたか？
-bool g_AutoScale = true;   // 画像を自動的にスケーリングするか？
+set< string, StrLess > g_Clipboard;
 
+string g_CurrentTagFolder; // 現在のタグファイル取得先カレントフォルダ
+
+bool g_AutoScale = true;   // 画像を自動的にスケーリングするか？
 GdkPixbufAnimation* g_Animation = 0;             // GdkPixbufAnimationオブジェクト
 GdkPixbufAnimationIter* g_AnimationIterator = 0; // GdkPixbufAnimationIterオブジェクト
 
@@ -112,6 +119,28 @@ gint MessageBox( const string& message, GtkMessageType messageType, GtkButtonsTy
 }
 
 /*
+  ThreeButtons_MessageBox : 3ボタンメッセージダイアログの表示
+
+  message : 出力するメッセージ
+  builder : GtkBuilderオブジェクトへのポインタ
+
+  戻り値 : レスポンスID(GTK_RESPONSE_YES/NO/CANCEL/DELETE_EVENT)
+*/
+gint ThreeButtons_MessageBox( const string& message, GtkBuilder* builder )
+{
+  GtkWidget* dialog = gtk_message_dialog_new( GTK_WINDOW( gtk_builder_get_object( builder, "root" ) ),
+                                              static_cast< GtkDialogFlags >( GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT ),
+                                              GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+                                              "%s", message.c_str() );
+  gtk_dialog_add_button( GTK_DIALOG( dialog ), "Cancel", GTK_RESPONSE_CANCEL );
+
+  gint res = gtk_dialog_run( GTK_DIALOG( dialog ) );
+  gtk_widget_destroy( dialog );
+
+  return( res );
+}
+
+/*
   ShowStatus : ステータスバーへのメッセージ出力
 
   builder : GtkBuilder オブジェクトへのポインタ
@@ -133,8 +162,6 @@ void ShowStatus( GtkBuilder* builder, const string& message )
 void InitTagList( GtkBuilder* builder, const string& fileName, const FileData& fileData )
 {
   // ファイルリストのパーツ
-  //GtkTreeView* view = GTK_TREE_VIEW( gtk_builder_get_object( builder, "taglist" ) );
-  //GtkListStore* store = GTK_LIST_STORE( gtk_tree_view_get_model( view ) );
   GtkListStore* store = GTK_LIST_STORE( gtk_builder_get_object( builder, "tagliststore" ) );
   GtkTreeIter iter;
 
@@ -156,9 +183,6 @@ void InitTagList( GtkBuilder* builder, const string& fileName, const FileData& f
 void InitCompletionList( GtkBuilder* builder, const TagData& tagData )
 {
   // 補完リストのパーツ
-  //GtkEntry* entry = GTK_ENTRY( gtk_builder_get_object( builder, "tagentry" ) );
-  //GtkEntryCompletion* completion = gtk_entry_get_completion( entry );
-  //GtkListStore* store = GTK_LIST_STORE( gtk_entry_completion_get_model( completion ) );
   GtkListStore* store = GTK_LIST_STORE( gtk_builder_get_object( builder, "completionstore" ) );
   GtkTreeIter iter;
 
@@ -180,9 +204,6 @@ void InitCompletionList( GtkBuilder* builder, const TagData& tagData )
 void ChangeCompletionList( GtkBuilder* builder, const string& oldTag, const string& newTag )
 {
   // 補完リストのパーツ
-  //GtkEntry* entry = GTK_ENTRY( gtk_builder_get_object( builder, "tagentry" ) );
-  //GtkEntryCompletion* completion = gtk_entry_get_completion( entry );
-  //GtkTreeModel* model = gtk_entry_completion_get_model( completion );
   GtkTreeModel* model = GTK_TREE_MODEL( gtk_builder_get_object( builder, "completionstore" ) );
   GtkTreeIter iter;
 
@@ -250,7 +271,7 @@ gboolean Timer( gpointer data )
 
   widget : GtkImage オブジェクトへのポインタ
   cairo : cairo_t オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 
   戻り値 : 常に FALSE
 */
@@ -258,8 +279,9 @@ gboolean CB_DrawImage( GtkWidget* widget, cairo_t* cairo, gpointer data )
 {
   if ( g_Animation == 0 ) return( FALSE );
 
-  // GtkBuilder オブジェクトへのポインタへ変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
   GtkWidget* viewport = GTK_WIDGET( gtk_builder_get_object( builder, "imageviewport" ) );
 
   int width = gtk_widget_get_allocated_width( viewport );
@@ -303,17 +325,18 @@ gboolean CB_DrawImage( GtkWidget* widget, cairo_t* cairo, gpointer data )
   CB_ShowImage : 画像の表示(コールバック関数)
 
   selection : GtkTreeSelection オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_ShowImage( GtkTreeSelection* selection, gpointer data )
 {
-  // GtkBuilder オブジェクトへのポインタへ変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
   GtkImage* image = GTK_IMAGE( gtk_builder_get_object( builder, "imageview" ) );
 
   // リスト選択されているファイル名の取得
   string fileName;
-  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
+  if ( ! GetFileName( builder, status->rootPath(), &fileName ) )
     return;
 
   // 画像の出力
@@ -459,7 +482,7 @@ string TagFileStatus::title() const
   builder : GtkBuilder オブジェクトへのポインタ
 */
 TagFileStatus::TagFileStatus( GtkBuilder* builder )
-  : edited_( false ), rootPath_(), tagFile_(), builder_( builder )
+  : canSave_( false ), edited_( false ), rootPath_(), tagFile_(), builder_( builder )
 {
   GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
   gtk_window_set_title( rootWin, title().c_str() );
@@ -483,6 +506,7 @@ void TagFileStatus::init( const string& rootPath, FileData* fileData, TagData* t
   }
 
   // 変数の初期化
+  canSave_ = true;
   rootPath_ = rootPath;
   tagFile_.clear();
   reset();
@@ -517,6 +541,7 @@ void TagFileStatus::open( const string& tagFile, FileData* fileData, TagData* ta
   }
 
   // 変数の初期化
+  canSave_ = true;
   rootPath_ = rootPath;
   tagFile_ = tagFile;
   reset();
@@ -538,8 +563,9 @@ void TagFileStatus::open( const string& tagFile, FileData* fileData, TagData* ta
 */
 void TagFileStatus::save( const FileData& fileData )
 {
-  // 編集されていなければ何もしない
-  if ( ! edited() ) return;
+  assert( hasFile() );
+
+  if ( ! ( canSave() && edited() ) ) return;
 
   // タグファイルの上書き
   WriteTagData( tagFile_, rootPath_, fileData );
@@ -560,6 +586,8 @@ void TagFileStatus::save( const FileData& fileData )
 */
 void TagFileStatus::save( const string& tagFile, const FileData& fileData )
 {
+  if ( ! canSave() ) return;
+
   // タグファイルの書き込み
   WriteTagData( tagFile, rootPath_, fileData );
 
@@ -573,91 +601,46 @@ void TagFileStatus::save( const string& tagFile, const FileData& fileData )
 }
 
 /*
-  CB_FileNew : タグリストの新規作成(コールバック関数)
-
-  menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  TagFileStatus::set : 編集ありにする
 */
-void CB_FileNew( GtkMenuItem* menuItem, gpointer data )
+void TagFileStatus::set()
 {
-  static string currentImageFolder;
+  edited_ = true;
 
-  // GtkBuilder オブジェクトへのポインタに変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
-
-  if ( GetFileNameFromDialog( builder, "ルートパスの選択", GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-                              "Cancel", "Select", &g_RootPath, &currentImageFolder ) == GTK_RESPONSE_ACCEPT ) {
-    // タグの初期化
-    InitTagData( g_RootPath, &g_FileData, &g_TagData );
-    // ファイルリストの初期化
-    InitFileList( builder, g_FileData, g_RootPath );
-    // 補完用リストの初期化
-    InitCompletionList( builder, g_TagData );
-    // 変数の初期化
-    g_TagFile.clear();
-    g_TagEdited = false;
-    // メッセージ出力
-    ShowStatus( builder, "Path : " + g_RootPath );
-  }
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
 }
 
 /*
-  CB_FileOpen : タグリストを開く(コールバック関数)
-
-  menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  TagFileStatus::reset : 編集なしにする
 */
-void CB_FileOpen( GtkMenuItem* menuItem, gpointer data )
+void TagFileStatus::reset()
 {
-  // GtkBuilder オブジェクトへのポインタに変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  edited_ = false;
 
-  string tagFile;
-  string rootPath;
-  if ( GetFileNameFromDialog( builder, "タグリストを開く", GTK_FILE_CHOOSER_ACTION_OPEN,
-                              "Cancel", "Open", &tagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
-    // タグファイルの読み込み
-    try {
-      ReadTagData( tagFile, &rootPath, &g_FileData, &g_TagData );
-    } catch( std::runtime_error& e ) {
-      MessageBox( e.what(), GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, builder );
-      return;
-    }
-    // ファイルリストの初期化
-    InitFileList( builder, g_FileData, rootPath );
-    // 補完用リストの初期化
-    InitCompletionList( builder, g_TagData );
-    // 変数の初期化
-    g_RootPath = rootPath;
-    g_TagFile = tagFile;
-    g_TagEdited = false;
-    // メッセージ出力
-    GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder, "root" ) );
-    gtk_window_set_title( rootWin, ( PROGRAM_NAME + " - [" + fs::path( tagFile ).filename().native() + "]" ).c_str() );
-    ShowStatus( builder, "Path : " + g_RootPath );
-  }
+  // メッセージ出力
+  GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder_, "root" ) );
+  gtk_window_set_title( rootWin, title().c_str() );
 }
 
 /*
   CB_FileSaveAs : タグリストの新規保存(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_FileSaveAs( GtkMenuItem* menuItem, gpointer data )
 {
-  // GtkBuilder オブジェクトへのポインタに変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
 
-  if ( GetFileNameFromDialog( builder, "タグリストの新規保存", GTK_FILE_CHOOSER_ACTION_SAVE,
-                              "Cancel", "Save", &g_TagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
-    WriteTagData( g_TagFile, g_RootPath, g_FileData );
-    // 変数の初期化
-    g_TagEdited = false;
-    // メッセージ出力
-    GtkWindow* rootWin = GTK_WINDOW( gtk_builder_get_object( builder, "root" ) );
-    gtk_window_set_title( rootWin, ( PROGRAM_NAME + " - [" + fs::path( g_TagFile ).filename().native() + "]" ).c_str() );
-    //ShowStatus( builder, "Tag file : " + g_TagFile + " ; Path : " + g_RootPath );
+  if ( ! status->canSave() ) return;
+
+  string tagFile = status->pathName();
+  if ( GetFileNameFromDialog( status->builder(), "タグリストの新規保存", GTK_FILE_CHOOSER_ACTION_SAVE,
+                              "Cancel", "Save", &tagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
+    status->save( tagFile, g_FileData );
   }
 }
 
@@ -665,26 +648,96 @@ void CB_FileSaveAs( GtkMenuItem* menuItem, gpointer data )
   CB_FileSave : タグリストの上書き保存(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_FileSave( GtkMenuItem* menuItem, gpointer data )
 {
-  if ( g_TagFile.empty() )
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+
+  if ( ! status->hasFile() ) {
     CB_FileSaveAs( menuItem, data );
-
-  if ( ! g_TagEdited )
     return;
+  }
 
-  WriteTagData( g_TagFile, g_RootPath, g_FileData );
+  status->save( g_FileData );
+}
 
-  g_TagEdited = false;
+/*
+  ConfirmSave : 保存するか確認するダイアログの出力
+
+  status : TagFileStatus オブジェクトへのポインタ
+
+  戻り値 : 処理を中断する場合は false を返す
+*/
+bool ConfirmSave( TagFileStatus* status )
+{
+  gint res = ThreeButtons_MessageBox( "編集中のファイルを保存しますか？", status->builder() );
+
+  switch ( res ) {
+  case GTK_RESPONSE_YES:
+    CB_FileSave( 0, status );
+    break;
+  case GTK_RESPONSE_NO:
+    break;
+  default:
+    return( false );
+  }
+
+  return( true );
+}
+
+/*
+  CB_FileNew : タグリストの新規作成(コールバック関数)
+
+  menuItem : GtkMenuItem オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
+*/
+void CB_FileNew( GtkMenuItem* menuItem, gpointer data )
+{
+  static string currentImageFolder;
+
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+
+  // 編集されたタグファイルが残っていたら、保存するか確認する
+  if ( status->edited() )
+    if ( ! ConfirmSave( status ) ) return;
+
+  string rootPath;
+  if ( GetFileNameFromDialog( status->builder(), "ルートパスの選択", GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+                              "Cancel", "Select", &rootPath, &currentImageFolder ) == GTK_RESPONSE_ACCEPT ) {
+    status->init( rootPath, &g_FileData, &g_TagData );
+  }
+}
+
+/*
+  CB_FileOpen : タグリストを開く(コールバック関数)
+
+  menuItem : GtkMenuItem オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
+*/
+void CB_FileOpen( GtkMenuItem* menuItem, gpointer data )
+{
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+
+  // 編集されたタグファイルが残っていたら、保存するか確認する
+  if ( status->edited() )
+    ConfirmSave( status );
+
+  string tagFile;
+  if ( GetFileNameFromDialog( status->builder(), "タグリストを開く", GTK_FILE_CHOOSER_ACTION_OPEN,
+                              "Cancel", "Open", &tagFile, &g_CurrentTagFolder ) == GTK_RESPONSE_ACCEPT ) {
+    status->open( tagFile, &g_FileData, &g_TagData );
+  }
 }
 
 /*
   CB_ToggleAutoScale : 画像をウィンドウに合わせる/そのままの大きさにする の切り替え(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : NULL ポインタ(未使用)
 */
 void CB_ToggleAutoScale( GtkMenuItem* menuItem, gpointer data )
 {
@@ -765,12 +818,13 @@ bool CheckDuplicateTag( const string& tag, string* message, const TagData& tagDa
   CB_AddTag : タグを登録し、タグリストに表示する(コールバック関数)
 
   entry : GtkEntry オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_AddTag( GtkEntry* entry, gpointer data )
 {
-  // GtkBuilder オブジェクトへのポインタに変換
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
 
   // タグの取得
   string tag = gtk_entry_get_text( entry );
@@ -784,7 +838,7 @@ void CB_AddTag( GtkEntry* entry, gpointer data )
 
   // タグを登録する対象ファイルの取得
   string fileName;
-  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
+  if ( ! GetFileName( builder, status->rootPath(), &fileName ) )
     return;
 
   // タグの登録
@@ -806,7 +860,7 @@ void CB_AddTag( GtkEntry* entry, gpointer data )
 
   gtk_entry_set_text( entry, "" );
 
-  g_TagEdited = true;
+  status->set();
 }
 
 /*
@@ -842,30 +896,39 @@ void CreateCompletion( GtkBuilder* builder )
   gtk_tree_sortable_set_sort_column_id( GTK_TREE_SORTABLE( sorted ), 0, GTK_SORT_ASCENDING );
   gtk_tree_sortable_set_sort_func( GTK_TREE_SORTABLE( sorted ), 0, SortTag, 0, 0 );
 
-  //GtkEntryCompletion* completion = gtk_entry_completion_new();
-
-  //GtkListStore* store = gtk_list_store_new( 1, G_TYPE_STRING );
-  //gtk_entry_completion_set_model( completion, GTK_TREE_MODEL( store ) );
-  //g_object_unref( store );
-
   GtkEntryCompletion* completion = GTK_ENTRY_COMPLETION( gtk_builder_get_object( builder, "entrycompletion" ) );
   gtk_entry_completion_set_text_column( completion, 0 );
+}
 
-  //gtk_entry_set_completion( GTK_ENTRY( gtk_builder_get_object( builder, "tagentry" ) ), completion );
-  //g_object_unref( completion );
+/*
+  CB_FilePopup : ファイルリスト上のメニュー表示(コールバック関数)
+
+  widget : GtkWidget オブジェクトへのポインタ
+  event : GdkEventButton オブジェクトへのポインタ
+  data : GtkBuilder オブジェクトへのポインタ
+*/
+gboolean CB_FilePopup( GtkWidget* widget, GdkEventButton* event, gpointer data )
+{
+  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+
+  if ( event->button == 3 ) {
+    GtkMenu* menu = GTK_MENU( gtk_builder_get_object( builder, "filepopup" ) );
+    gtk_menu_popup_at_pointer( menu, reinterpret_cast< GdkEvent* >( event ) );
+  }
+
+  return( FALSE );
 }
 
 /*
   CreateFileList : ファイルリストの生成
 
-  builder : GtkBuilder オブジェクトへのポインタ
+  status : TagFileStatus オブジェクトへのポインタ
 */
-void CreateFileList( GtkBuilder* builder )
+void CreateFileList( TagFileStatus* status )
 {
+  GtkBuilder* builder = status->builder();
+
   GtkTreeView* view = GTK_TREE_VIEW( gtk_builder_get_object( builder, "filelist" ) );
-  //GtkListStore* store = gtk_list_store_new( 1, G_TYPE_STRING );
-  //gtk_tree_view_set_model( view, GTK_TREE_MODEL( store ) );
-  //g_object_unref( store );
 
   GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
   GtkTreeViewColumn* column = gtk_tree_view_column_new_with_attributes
@@ -874,7 +937,9 @@ void CreateFileList( GtkBuilder* builder )
 
   GtkTreeSelection* selection = gtk_tree_view_get_selection( view );
   gtk_tree_selection_set_mode( selection, GTK_SELECTION_SINGLE );
-  g_FileListID = g_signal_connect( G_OBJECT( selection ), "changed", G_CALLBACK( CB_ShowImage ), builder );
+  g_FileListID = g_signal_connect( G_OBJECT( selection ), "changed", G_CALLBACK( CB_ShowImage ), status );
+
+  g_signal_connect( G_OBJECT( view ), "button-press-event", G_CALLBACK( CB_FilePopup ), builder );
 }
 
 /*
@@ -904,9 +969,6 @@ gboolean CB_TagPopup( GtkWidget* widget, GdkEventButton* event, gpointer data )
 void CreateTagList( GtkBuilder* builder )
 {
   GtkTreeView* view = GTK_TREE_VIEW( gtk_builder_get_object( builder, "taglist" ) );
-  //GtkListStore* store = gtk_list_store_new( 1, G_TYPE_STRING );
-  //gtk_tree_view_set_model( view, GTK_TREE_MODEL( store ) );
-  //g_object_unref( store );
 
   GtkTreeModel* sorted = GTK_TREE_MODEL( gtk_builder_get_object( builder, "taglistsort" ) );
   gtk_tree_sortable_set_sort_column_id( GTK_TREE_SORTABLE( sorted ), 0, GTK_SORT_ASCENDING );
@@ -922,21 +984,23 @@ void CreateTagList( GtkBuilder* builder )
 /*
   CreateMenu : メニューの生成
 
-  builder : GtkBuilder オブジェクトへのポインタ
+  status : TagFileStatus オブジェクトへのポインタ
 */
-void CreateMenu( GtkBuilder* builder )
+void CreateMenu( TagFileStatus* status )
 {
+  GtkBuilder* builder = status->builder();
+
   GObject* obj = gtk_builder_get_object( builder, "filenew" );
-  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileNew ), builder );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileNew ), status );
   obj = gtk_builder_get_object( builder, "fileopen" );
-  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileOpen ), builder );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileOpen ), status );
   obj = gtk_builder_get_object( builder, "filesave" );
-  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSave ), builder );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSave ), status );
   obj = gtk_builder_get_object( builder, "filesaveas" );
-  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSaveAs ), builder );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_FileSaveAs ), status );
 
   obj = gtk_builder_get_object( builder, "autoscale" );
-  g_signal_connect( obj, "activate", G_CALLBACK( CB_ToggleAutoScale ), builder );
+  g_signal_connect( obj, "activate", G_CALLBACK( CB_ToggleAutoScale ), 0 );
 }
 
 /*
@@ -987,6 +1051,55 @@ bool GetSelectedRow( GtkBuilder* builder, const string& listName, string* rowNam
   g_free( gc );
 
   return( true );
+}
+
+/*
+  CB_TagCopy : タグのコピー(コールバック関数)
+
+  menuItem : GtkMenuItem オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
+*/
+void CB_TagCopy( GtkMenuItem* menuItem, gpointer data )
+{
+  // TagClipboard オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
+
+  string fileName;
+  if ( ! GetFileName( builder, status->rootPath(), &fileName ) )
+    return;
+
+  g_Clipboard = g_FileData[fileName];
+  //std::cout << g_Clipboard.size() << std::endl;
+}
+
+/*
+  CB_TagPaste : タグの貼り付け(コールバック関数)
+
+  menuItem : GtkMenuItem オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
+*/
+void CB_TagPaste( GtkMenuItem* menuItem, gpointer data )
+{
+  // TagClipboard オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
+
+  string fileName;
+  if ( ! GetFileName( builder, status->rootPath(), &fileName ) )
+    return;
+
+  auto& tagList = g_FileData[fileName];
+  for ( auto i = g_Clipboard.begin() ; i != g_Clipboard.end() ; ++i ) {
+    if ( tagList.find( *i ) == tagList.end() ) {
+      tagList.insert( *i );
+      g_TagData[*i].insert( fileName );
+    }
+  }
+
+  InitTagList( builder, fileName, g_FileData );
+
+  status->set();
 }
 
 /*
@@ -1041,11 +1154,13 @@ gint TagEdit( GtkBuilder* builder, const string& currentTag, string* newTag )
   CB_TagEdit : タグの編集(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_TagEdit( GtkMenuItem* menuItem, gpointer data )
 {
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
 
   GtkTreeModel* model;
   GtkTreeIter iter;
@@ -1069,7 +1184,7 @@ void CB_TagEdit( GtkMenuItem* menuItem, gpointer data )
       gtk_list_store_set( GTK_LIST_STORE( child ), &child_iter, 0, newTag.c_str(), -1 );
 
       ChangeCompletionList( builder, currentTag, newTag );
-      g_TagEdited = true;
+      status->set();
       break;
     }
   }
@@ -1079,16 +1194,18 @@ void CB_TagEdit( GtkMenuItem* menuItem, gpointer data )
   CB_TagDelete : タグの削除(コールバック関数)
 
   menuItem : GtkMenuItem オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 */
 void CB_TagDelete( GtkMenuItem* menuItem, gpointer data )
 {
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  // TagFileStatus オブジェクトへのポインタに変換
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
+  GtkBuilder* builder = status->builder();
 
   GtkTreeModel* model;
   GtkTreeIter iter;
   string fileName;
-  if ( ! GetFileName( builder, g_RootPath, &fileName ) )
+  if ( ! GetFileName( builder, status->rootPath(), &fileName ) )
     return;
   string tagName;
   if ( ! GetSelectedRow( builder, "taglist", &tagName, &model, &iter ) )
@@ -1102,20 +1219,37 @@ void CB_TagDelete( GtkMenuItem* menuItem, gpointer data )
   GtkTreeModel* child = gtk_tree_model_sort_get_model( GTK_TREE_MODEL_SORT( model ) );
   gtk_list_store_remove( GTK_LIST_STORE( child ), &child_iter );
 
-  g_TagEdited = true;
+  status->set();
+}
+
+/*
+  CreateFilePopupMenu : ファイルリスト上のポップアップメニューの作成
+
+  status : TagFileStatus オブジェクトへのポインタ
+*/
+void CreateFilePopupMenu( TagFileStatus* status )
+{
+  GtkBuilder* builder = status->builder();
+
+  GObject* tagCopy = gtk_builder_get_object( builder, "tagcopy" );
+  g_signal_connect( tagCopy, "activate", G_CALLBACK( CB_TagCopy ), status );
+  GObject* tagPaste = gtk_builder_get_object( builder, "tagpaste" );
+  g_signal_connect( tagPaste, "activate", G_CALLBACK( CB_TagPaste ), status );
 }
 
 /*
   CreateTagPopupMenu : タグリスト上のポップアップメニューの作成
 
-  builder : GtkBuilderオブジェクトへのポインタ
+  status : TagFileStatus オブジェクトへのポインタ
 */
-void CreateTagPopupMenu( GtkBuilder* builder )
+void CreateTagPopupMenu( TagFileStatus* status )
 {
+  GtkBuilder* builder = status->builder();
+
   GObject* tagEdit = gtk_builder_get_object( builder, "tagedit" );
-  g_signal_connect( tagEdit, "activate", G_CALLBACK( CB_TagEdit ), builder );
+  g_signal_connect( tagEdit, "activate", G_CALLBACK( CB_TagEdit ), status );
   GObject* tagDelete = gtk_builder_get_object( builder, "tagdelete" );
-  g_signal_connect( tagDelete, "activate", G_CALLBACK( CB_TagDelete ), builder );
+  g_signal_connect( tagDelete, "activate", G_CALLBACK( CB_TagDelete ), status );
 }
 
 /*
@@ -1123,17 +1257,19 @@ void CreateTagPopupMenu( GtkBuilder* builder )
 
   widget : GtkWidget オブジェクトへのポインタ
   event : GdkEvent オブジェクトへのポインタ
-  data : GtkBuilder オブジェクトへのポインタ
+  data : TagFileStatus オブジェクトへのポインタ
 
   戻り値 : 常に FALSE
 */
 gint CB_DeleteEvent( GtkWidget* widget, GdkEvent* event, gpointer data )
 {
-  GtkBuilder* builder = static_cast< GtkBuilder* >( data );
+  TagFileStatus* status = static_cast< TagFileStatus* >( data );
 
-  if ( g_TagEdited )
-    if ( MessageBox( "タグファイルを保存しますか？", GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, builder ) == GTK_RESPONSE_YES )
-      CB_FileSave( 0, data );
+  if ( status->edited() )
+    if ( ! ConfirmSave( status ) )
+      return( TRUE );
+    //if ( MessageBox( "タグファイルを保存しますか？", GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, status->builder() ) == GTK_RESPONSE_YES )
+    //  CB_FileSave( 0, data );
 
   return( FALSE );
 }
@@ -1149,27 +1285,25 @@ int main( int argc, char* argv[] )
     g_clear_error( &error );
     return( 1 );
   }
+
+  TagFileStatus status( builder );
+
   GObject* rootWin = gtk_builder_get_object( builder, "root" );
   gtk_window_set_title( GTK_WINDOW( rootWin ), ( PROGRAM_NAME + " - [No file]" ).c_str() );
   g_signal_connect( rootWin, "destroy", G_CALLBACK( gtk_main_quit ), 0 );
-  g_signal_connect( rootWin, "delete-event", G_CALLBACK( CB_DeleteEvent ), builder );
-  //GObject* pane2 = gtk_builder_get_object( builder, "pane2" );
+  g_signal_connect( rootWin, "delete-event", G_CALLBACK( CB_DeleteEvent ), &status );
 
-  //GTK_DrawingArea draw;
-  //DRAW_SW = new GTK_DrawingArea_ScrolledWindow( draw );
-  //GTK_DrawingArea_ImageShiftEvent drawEvent( *DRAW );
-  //gtk_paned_add2( GTK_PANED( pane2 ), DRAW_SW->widget() );
-
-  CreateMenu( builder );
-  CreateFileList( builder );
+  CreateMenu( &status );
+  CreateFileList( &status );
   CreateTagList( builder );
   CreateCompletion( builder );
-  CreateTagPopupMenu( builder );
+  CreateFilePopupMenu( &status );
+  CreateTagPopupMenu( &status );
 
   GObject* tagEntry = gtk_builder_get_object( builder, "tagentry" );
-  g_signal_connect( tagEntry, "activate", G_CALLBACK( CB_AddTag ), builder );
+  g_signal_connect( tagEntry, "activate", G_CALLBACK( CB_AddTag ), &status );
   GObject* image = gtk_builder_get_object( builder, "imageview" );
-  g_signal_connect( image, "draw", G_CALLBACK( CB_DrawImage ), builder );
+  g_signal_connect( image, "draw", G_CALLBACK( CB_DrawImage ), &status );
 
   ShowStatus( builder, "Create new path or open tag file." );
 
@@ -1178,8 +1312,6 @@ int main( int argc, char* argv[] )
   gtk_widget_show_all( GTK_WIDGET( rootWin ) );
 
   gtk_main();
-
-  //delete DRAW_SW;
 
   return( 0 );
 }

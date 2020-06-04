@@ -20,6 +20,11 @@
       <column type="gchararray"/>
     </columns>
   </object>
+  <object class="GtkImage" id="tagcopyimage">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <property name="stock">gtk-copy</property>
+  </object>
   <object class="GtkListStore" id="tagliststore">
     <columns>
       <!-- column-name tag -->
@@ -385,6 +390,33 @@
         <property name="can_focus">False</property>
         <property name="use_underline">True</property>
         <property name="use_stock">True</property>
+      </object>
+    </child>
+  </object>
+  <object class="GtkImage" id="tagpasteimage">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <property name="stock">gtk-paste</property>
+  </object>
+  <object class="GtkMenu" id="filepopup">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <child>
+      <object class="GtkImageMenuItem" id="tagcopy">
+        <property name="label" translatable="yes">タグのコピー</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="image">tagcopyimage</property>
+        <property name="use_stock">False</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkImageMenuItem" id="tagpaste">
+        <property name="label" translatable="yes">タグの貼付け</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="image">tagpasteimage</property>
+        <property name="use_stock">False</property>
       </object>
     </child>
   </object>

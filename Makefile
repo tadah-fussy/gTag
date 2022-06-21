@@ -5,7 +5,7 @@
 PROGRAM = gTag
 CC = g++
 PROF_OPTS = -pg
-CC_OPTS = -O2 -Wall `pkg-config --cflags gtk+-3.0`
+CC_OPTS = -O2 -Wall `pkg-config --cflags gtk4`
 LK_OPTS = -lpng -lz -lboost_filesystem -lboost_system `pkg-config --libs gtk+-3.0 pangoft2`
 RM = rm -f
 

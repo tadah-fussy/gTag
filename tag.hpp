@@ -8,7 +8,10 @@
 
 #include <vector>
 #include <map>
+#include <unordered_set>
 #include <string>
+
+#include <boost/filesystem.hpp>
 
 #include <cassert>
 
@@ -56,6 +59,13 @@ class Tag
    ///
    void resetParent() { parent_ = 0; }
 
+   /// @brief 等号演算子の多重定義
+   ///
+   /// @param tag 比較対象
+   /// @return 等しければ true
+   bool operator==( const Tag& tag )
+   { return( id_ == tag.id_ ); }
+
    private:
 
    std::string name_;   // タグ名
@@ -63,28 +73,69 @@ class Tag
    size_t parent_;      // 親タグの id ( 親がない場合は 0 )
 };
 
-/**
- * @brief 画像ファイル情報
- * 
- */
-class ImageFile
+namespace std
 {
-   public:
+   /**
+    * @brief Tag 用ハッシュ関数オブジェクト
+    * 
+    */
+   template<>
+   struct hash< Tag >
+   {
+      using result_type = hash< size_t >::result_type;
+      using argument_type = Tag;
 
-   private:
+      /// @brief Tag 用ハッシュ計算
+      ///
+      /// @param tag ハッシュ値計算対象
+      /// @return ハッシュ値
+      result_type operator()( const argument_type& tag )
+      { return( hash< size_t >().operator()( tag.id() ) ); }
+   };
 
-   std::string name_;   // ファイル名(フルパス)
-   
-};
+   /**
+    * @brief boost::filesystem::path 用ハッシュ関数オブジェクト
+    * 
+    */
+   template<>
+   struct hash< ::boost::filesystem::path >
+   {
+      using result_type = size_t;
+      using argument_type = ::boost::filesystem::path;
+
+      /// @brief Tag 用ハッシュ計算
+      ///
+      /// @param tag ハッシュ値計算対象
+      /// @return ハッシュ値
+      result_type operator()( const argument_type& path )
+      { return( ::boost::filesystem::hash_value( path ) ); }
+   };
+
+} // namespace std
 
 class TagList
 {
    public:
 
+   /// @brief デフォルト・コンストラクタ
+   ///
+   /// 空のリストを作成する
+   TagList() {}
+
+   /// @brief ルート・ディレクトリからファイル情報だけを読み込む
+   ///
+   /// @param root ルート・ディレクトリ
+   TagList( const boost::filesystem::path& root );
+
+   /// @brief 入力ストリームからファイル情報とタグ情報を読み込む
+   ///
+   /// ルート・ディレクトリ内の情報と整合を取る
+   TagList( const std::istream& is )
+
    private:
 
-   std::map< size_t, std::vector< size_t > > tag2File_;
-   std::map< size_t, std::vector< size_t > > file2Tag_;
-   std::vector< std::string > tagList_;
-   std::vector< std::string > fileList_;
+   std::map< size_t, std::unordered_set< size_t > > tag2File_;  // タグに対するファイル一覧
+   std::map< size_t, std::unordered_set< size_t > > file2Tag_;  // ファイルに対するタグ一覧
+   std::unordered_set< Tag > tagList_;  // タグのリスト
+   std::unordered_set< boost::filesystem::path > fileList_;  // ファイルのリスト
 };
